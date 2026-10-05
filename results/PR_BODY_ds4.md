@@ -40,4 +40,3 @@ ds4 tests: ok
 
 The fast path alone did not change the decode speed (10.3 -> 10.0 t/s, within noise): once the host round trip is gone, the per-layer `ds4_gpu_end_commands()` drain becomes the limiter, hence the second, opt-in switch. I kept it opt-in because I could only validate it on the single-GPU streaming configuration.
 
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
