@@ -1,0 +1,20 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "ds4": {
+      "name": "DwarfStar V4.1 Flash (Spark)",
+      "npm": "@ai-sdk/openai-compatible",
+      "options": {
+        "baseURL": "http://172.31.32.197:8011/v1",
+        "apiKey": "dsv4-local"
+      },
+      "models": {
+        "deepseek-v4.1-flash": {
+          "name": "DeepSeek V4.1 Flash Q2 pruned (Spark)",
+          "limit": { "context": 32768, "output": 8192 }
+        }
+      }
+    }
+  },
+  "model": "ds4/deepseek-v4.1-flash"
+}

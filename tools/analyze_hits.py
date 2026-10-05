@@ -15,7 +15,7 @@ has_w=False
 for r in csv.DictReader(open(a.csv)):
     w=float(r['weight']) if 'weight' in r and r['weight'] not in (None,'') else None
     if w is not None: has_w=True
-    rows.append((int(r['layer']),int(r['expert']),int(r['hits']),int(r['layer_rows']),w or 0.0))
+    rows.append((int(r['layer']),int(r['expert']),int(float(r['hits'])),int(r['layer_rows']),w or 0.0))
 L=max(r[0] for r in rows)+1; E=max(r[1] for r in rows)+1
 H=np.zeros((L,E)); R=np.zeros(L); W=np.zeros((L,E))
 for il,e,h,lr,w in rows: H[il,e]=h; R[il]=lr; W[il,e]=w

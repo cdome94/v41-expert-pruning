@@ -37,8 +37,8 @@ def pruned_check(hits_csv,alloc_json,profile_csv):
     if not (exists(hits_csv) and exists(alloc_json) and exists(profile_csv)): return None
     keep=json.load(open(alloc_json))['keep']
     H=np.zeros((40,384)); Hp=np.zeros((40,384))
-    for r in csv.DictReader(open(profile_csv)): H[int(r['layer']),int(r['expert'])]=int(r['hits'])
-    for r in csv.DictReader(open(hits_csv)): Hp[int(r['layer']),int(r['expert'])]=int(r['hits'])
+    for r in csv.DictReader(open(profile_csv)): H[int(r['layer']),int(r['expert'])]=int(float(r['hits']))
+    for r in csv.DictReader(open(hits_csv)): Hp[int(r['layer']),int(r['expert'])]=int(float(r['hits']))
     bad=0
     for il in range(40):
         live=set(np.argsort(-H[il],kind='stable')[:keep[il]]); dead=[e for e in range(384) if e not in live]

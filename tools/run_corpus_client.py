@@ -29,6 +29,7 @@ with open(a.out,'a') as fo:
         if r['id'] in done: continue
         body={'model':'deepseek-v4.1-flash','messages':r['messages'],'max_tokens':r['max_tokens'],
               'temperature':a.temperature,'stream':False,'think':bool(r['think'])}
+        if r.get('tools'): body['tools']=r['tools']; body['tool_choice']=r.get('tool_choice','auto')
         data=json.dumps(body).encode()
         t=time.time()
         try:
@@ -39,6 +40,7 @@ with open(a.out,'a') as fo:
             ch=js.get('choices',[{}])[0].get('message',{})
             rec={'id':r['id'],'group':r['group'],'think':r['think'],'seconds':round(dt,1),
                  'usage':js.get('usage'),'content':ch.get('content'),'reasoning':ch.get('reasoning_content') or ch.get('reasoning'),
+                 'tool_calls':ch.get('tool_calls'),
                  'finish':js.get('choices',[{}])[0].get('finish_reason')}
         except urllib.error.HTTPError as e:
             rec={'id':r['id'],'group':r['group'],'error':e.code,'body':e.read().decode(errors='replace')[:500],'seconds':round(time.time()-t,1)}

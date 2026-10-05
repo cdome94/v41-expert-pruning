@@ -16,6 +16,13 @@ domain and large outside it. All numbers below were measured, not estimated.
 > This is a **specialisation** technique. The pruned model is not an equivalent
 > model: on the profiled workload (Italian prose, cyber-security, code, agent
 > traffic) it loses 1-5% perplexity; on unrelated English prose it loses 70%.
+> And the profile must really cover the traffic you will serve: our first
+> profile had no requests with `tools`, and the pruned model emitted malformed
+> DSML tool calls that the server rejected, while the unpruned model was fine.
+> Re-profiling with 45 OpenCode-style tool-bearing requests (`data/profile_tools_corpus.jsonl`)
+> and merging the two profiles 60/40 (`tools/merge_hits.py`) moved 823 experts into
+> the live set, raised tool-traffic coverage from 85% to 96%, and restored correct
+> tool calls (15/15 same tool-or-text decision as the unpruned model).
 
 ## How it works
 
@@ -113,6 +120,10 @@ absolute paths (`/home/utente/ds4-engine/...`) that you will want to adapt.
 | `bench_from_log.py` | prefill/decode t/s per request from the server log |
 | `quality_run.sh` | perplexity on held-out texts + ds4's official-continuation scorer |
 | `weekend_pipeline.sh` | the unattended orchestration that produced the Q2 results |
+| `build_tools_corpus.py`, `merge_hits.py` | OpenCode-style tool-bearing profile corpus; weighted merge of several profiles |
+| `test_endpoint.py` | endpoint check: long prefill, prefix cache, OpenAI tool call, SSE streaming |
+| `serve-v41.sh`, `chat-v41.sh` | LAN server launcher (ctx 32768, KV disk cache, fast path) and terminal chat |
+| `setup-opencode-spark.ps1`, `opencode-provider.json` | Windows client setup for OpenCode against the Spark endpoint |
 
 Minimal recipe:
 
