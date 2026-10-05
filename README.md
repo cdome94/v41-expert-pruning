@@ -91,8 +91,13 @@ Measured effect on the pruned Q2 (8546 live experts, 8700 cache slots): the
 fast path alone leaves decode at 10.0 t/s (the per-layer drain becomes the
 limiter), fast path + queued layers gives 12.7 t/s; prefill 19.2 t/s; all 40
 temperature-0 completions byte-identical to the host path. The memory-bandwidth
-ceiling of this configuration is around 20 t/s, so roughly 30 ms per token of
-non-expert work remain to be explained.
+ceiling of this configuration is around 20 t/s. An `nsys` capture
+(`results/nsys/`) shows where the rest goes: the IQ2_XXS expert decode kernel
+runs at about a third of the memory bandwidth (20 ms/token), the Q2_K down
+kernel at about a third as well (8 ms), and about 12 ms/token are GPU idle
+between host-side steps. Rebuilding the patch on current ds4 `main` gives the
+same 12.5 t/s; making the per-token device-to-device copies asynchronous did
+not help. Further gains need kernel work, not cache work.
 
 ## Tools
 
