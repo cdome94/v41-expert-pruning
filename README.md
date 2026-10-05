@@ -9,7 +9,7 @@ operation is reversible by restoring the saved biases.
 
 Combined with ds4's SSD-streaming expert cache, this turns a model that does not
 fit in 119 GiB of unified memory into one whose whole live expert set is
-resident after warm-up: zero NVMe misses, decode 7.3 -> 10+ t/s, prefill
+resident after warm-up: zero NVMe misses, decode 7.3 -> 12.7 t/s, prefill
 9 -> 19 t/s on one GB10, with a quality loss that is small on the profiled
 domain and large outside it. All numbers below were measured, not estimated.
 
@@ -61,7 +61,8 @@ NLL on 5 official DeepSeek API continuations):
 | Q4_K streaming (25% cache) | 384 | 3.3 t/s | 2.4 t/s | 2.59 | 1.48 | 4.01 | 0.205 / 99% |
 | Q4_K pruned 25% (resident) | 3889 | 9.5 t/s | 9.9 t/s | 3.84 (+48%) | 1.92 (+30%) | 12.85 (x3.2) | 1.553 / 71% |
 | Q2 streaming (55% cache) | 384 | 7.3 t/s | 9.0 t/s | 3.12 | 1.51 | 4.27 | 0.443 / 88% |
-| Q2 pruned 55% (resident) | 8546 | 10.3 t/s | 18.8 t/s | 3.17 (+1.4%) | 1.54 (+1.7%) | 7.31 (+71%) | 1.189 / 78% |
+| Q2 pruned 55% (resident, host streaming path) | 8546 | 10.3 t/s | 18.8 t/s | 3.17 (+1.4%) | 1.54 (+1.7%) | 7.31 (+71%) | 1.189 / 78% |
+| Q2 pruned 55% + engine patch (resident fast path, queued layers) | 8546 | 12.7 t/s | 19.2 t/s | same | same | same | same |
 | Q2 pruned 72% (not resident) | 11109 | - | - | 3.14 (+0.6%) | 1.51 (-0.1%) | 5.23 (+22%) | 1.103 / 82% |
 
 Mechanism check: during the pruned benchmarks the profiler recorded
@@ -85,6 +86,13 @@ Full report with the exact commands: [results/REPORT_2026-10-03.md](results/REPO
   resident; `DS4_CUDA_DISABLE_RESIDENT_FAST_PATH=1` disables it.
 - `DS4_CUDA_V41_QUEUE_LAYERS=1`: opt-in, skips the per-layer command drain in
   the single-GPU V4.1 decode when the fast path is active.
+
+Measured effect on the pruned Q2 (8546 live experts, 8700 cache slots): the
+fast path alone leaves decode at 10.0 t/s (the per-layer drain becomes the
+limiter), fast path + queued layers gives 12.7 t/s; prefill 19.2 t/s; all 40
+temperature-0 completions byte-identical to the host path. The memory-bandwidth
+ceiling of this configuration is around 20 t/s, so roughly 30 ms per token of
+non-expert work remain to be explained.
 
 ## Tools
 

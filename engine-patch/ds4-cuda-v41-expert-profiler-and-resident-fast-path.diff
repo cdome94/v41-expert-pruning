@@ -1,8 +1,8 @@
 diff --git a/ds4.c b/ds4.c
-index 633a3cf..4ed99d5 100644
+index af13cc8..fb99ec1 100644
 --- a/ds4.c
 +++ b/ds4.c
-@@ -1505,6 +1505,134 @@ static double now_sec(void) {
+@@ -1508,6 +1508,134 @@ static double now_sec(void) {
      return (double)ts.tv_sec + (double)ts.tv_nsec * 1.0e-9;
  }
  
@@ -137,7 +137,7 @@ index 633a3cf..4ed99d5 100644
  /* =========================================================================
   * Metal Routed Expert Locality Profiler.
   * =========================================================================
-@@ -26221,6 +26349,8 @@ static bool metal_graph_encode_decode_layer_phase(
+@@ -26230,6 +26358,8 @@ static bool metal_graph_encode_decode_layer_phase(
                                                      layer->ffn_gate_tid2eid != NULL,
                                                      metal_graph_router_logits(g)) != 0;
          }
@@ -146,7 +146,7 @@ index 633a3cf..4ed99d5 100644
          if (ok) ok = metal_graph_decode_set_hash_selected_override(model,
                                                                     layer,
                                                                     il,
-@@ -32787,6 +32917,8 @@ static bool metal_graph_encode_layer_ffn_batch(
+@@ -32796,6 +32926,8 @@ static bool metal_graph_encode_layer_ffn_batch(
                      DS4_EXPERT_WEIGHT_SCALE,
                      n_tokens) != 0;
      }
@@ -155,7 +155,7 @@ index 633a3cf..4ed99d5 100644
      ds4_gpu_tensor_free(router_tokens);
      if (ok) {
          metal_graph_debug_dump_tensor("ffn_moe_logits", metal_graph_batch_router_logits(g),
-@@ -40735,11 +40867,15 @@ static bool ds41_moe_partial(ds41_gpu_graph *g, const ds4_model *m,
+@@ -40749,11 +40881,15 @@ static bool ds41_moe_partial(ds41_gpu_graph *g, const ds4_model *m,
      ds4_gpu_tensor *routed = shared_owner ? g->block : g->routed;
      const ds4_tensor *bias = ds41_image_at(g, g->pos) ? l->ffn_exp_probs_vl : l->ffn_exp_probs_b;
      if (!bias) return false;
@@ -171,7 +171,7 @@ index 633a3cf..4ed99d5 100644
      const bool shared_here = !shared_owner || g->tp_rank == (il & 1u);
      bool shared_queued = false;
  #if !defined(__APPLE__) && !defined(DS4_ROCM_BUILD)
-@@ -41172,8 +41308,8 @@ static bool ds41_graph_decode_layer(ds41_gpu_graph *g, const ds4_model *m,
+@@ -41186,8 +41322,8 @@ static bool ds41_graph_decode_layer(ds41_gpu_graph *g, const ds4_model *m,
  }
  #endif
  
@@ -182,7 +182,7 @@ index 633a3cf..4ed99d5 100644
      ds41_prefill_row *b = &g->batch;
      if (!g->image_count) return ds4_gpu_router_select_batch_tensor(
          b->selected, b->route_weights, b->route_probs, m->map, m->size,
-@@ -41207,6 +41343,15 @@ static bool ds41_route_batch(ds41_gpu_graph *g, const ds4_model *m,
+@@ -41221,6 +41357,15 @@ static bool ds41_route_batch(ds41_gpu_graph *g, const ds4_model *m,
      return true;
  }
  
@@ -198,7 +198,7 @@ index 633a3cf..4ed99d5 100644
  static bool ds41_moe_batch(ds41_gpu_graph *g, const ds4_model *m,
                             const ds4_layer_weights *l, uint32_t il, uint32_t count,
                             bool shared_owner) {
-@@ -41215,7 +41360,7 @@ static bool ds41_moe_batch(ds41_gpu_graph *g, const ds4_model *m,
+@@ -41229,7 +41374,7 @@ static bool ds41_moe_batch(ds41_gpu_graph *g, const ds4_model *m,
      const uint64_t down_row = routed_expert_row_bytes(l->ffn_down_exps);
      bool mid_f16 = false;
      return ds41_matmul_batch(b->route_logits, m, l->ffn_gate_inp, b->norm, count, false) &&
@@ -207,7 +207,7 @@ index 633a3cf..4ed99d5 100644
          ((shared_owner && g->tp_rank != (il & 1u)) ||
          (ds41_matmul_batch(b->shared_gate, m, l->ffn_gate_shexp, b->norm, count, true) &&
          ds41_matmul_batch(b->shared_up, m, l->ffn_up_shexp, b->norm, count, true) &&
-@@ -41263,8 +41408,12 @@ static DS4_MAYBE_UNUSED bool ds41_graph_step(ds41_gpu_graph *g, const ds4_model
+@@ -41282,8 +41427,12 @@ static DS4_MAYBE_UNUSED bool ds41_graph_step(ds41_gpu_graph *g, const ds4_model
       * layer mapped, using the same admitted reserve as layer-major prefill. */
      const bool layer_resident = g->streaming && g->quality;
      if (layer_resident && !ds4_gpu_end_commands()) ok = false;
@@ -223,7 +223,7 @@ index 633a3cf..4ed99d5 100644
          const ds4_layer_weights *l = &w->layer[il];
          if (layer_resident)
 diff --git a/ds4_cuda.cu b/ds4_cuda.cu
-index 3543459..42f2545 100644
+index 3d5ca5b..0bed750 100644
 --- a/ds4_cuda.cu
 +++ b/ds4_cuda.cu
 @@ -184,6 +184,12 @@ static std::vector<int32_t> g_stream_prefill_ids, g_stream_prefill_slots;
@@ -477,10 +477,10 @@ index 3543459..42f2545 100644
          /* Read in file order and merge adjacent misses when their cache slots
           * are contiguous. The private two-buffer ring overlaps reads/copies. */
 diff --git a/ds4_gpu.h b/ds4_gpu.h
-index 599f02b..7b0bb4f 100644
+index a4c76a5..6a1fcb5 100644
 --- a/ds4_gpu.h
 +++ b/ds4_gpu.h
-@@ -282,6 +282,10 @@ typedef struct ds4_gpu_stream_expert_table {
+@@ -359,6 +359,10 @@ typedef struct ds4_gpu_stream_expert_table {
      uint64_t    down_expert_bytes;
  } ds4_gpu_stream_expert_table;
  #if !defined(__APPLE__) && !defined(DS4_ROCM_BUILD) && !defined(DS4_NO_GPU)
