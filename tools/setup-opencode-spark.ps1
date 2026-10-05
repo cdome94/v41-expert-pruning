@@ -12,7 +12,8 @@ param(
     [string]$SparkHost = "172.31.32.197",
     [int]$Port = 8011,
     [int]$Context = 32768,
-    [int]$Output = 8192
+    [int]$Output = 8192,
+    [string]$ProjectDir = ""   # opzionale: scrive anche <ProjectDir>\opencode.json (precedenza massima, letto sempre, anche dalla Desktop app)
 )
 $ErrorActionPreference = "Stop"
 $base = "http://${SparkHost}:${Port}/v1"
@@ -62,6 +63,14 @@ $cfg['model'] = "ds4/deepseek-v4.1-flash"
 $cfg | ConvertTo-Json -Depth 10 | Set-Content -Path $cfgPath -Encoding UTF8
 Write-Host "   OK: provider 'ds4' scritto, modello predefinito ds4/deepseek-v4.1-flash" -ForegroundColor Green
 
+if ($ProjectDir) {
+    $projCfg = Join-Path $ProjectDir "opencode.json"
+    if (Test-Path $projCfg) { Copy-Item $projCfg "$projCfg.bak-$(Get-Date -Format yyyyMMdd-HHmmss)" }
+    $pc = [ordered]@{ '$schema' = "https://opencode.ai/config.json"; provider = @{ ds4 = $provider }; model = "ds4/deepseek-v4.1-flash" }
+    $pc | ConvertTo-Json -Depth 10 | Set-Content -Path $projCfg -Encoding UTF8
+    Write-Host "   OK: scritto anche $projCfg (config di progetto)" -ForegroundColor Green
+}
+
 Write-Host "3) OpenCode installato? ..." -ForegroundColor Cyan
 $oc = Get-Command opencode -ErrorAction SilentlyContinue
 if ($oc) {
@@ -86,6 +95,8 @@ try {
 }
 
 Write-Host ""
-Write-Host "Fatto. Apri una cartella di progetto e lancia:  opencode" -ForegroundColor Cyan
+Write-Host "Fatto. Riavvia OpenCode (anche la Desktop app: legge la configurazione all'avvio) e seleziona" -ForegroundColor Cyan
+Write-Host "il modello con /models -> 'DwarfStar V4.1 Flash (Spark)'. Se la Desktop app non mostra il provider," -ForegroundColor Cyan
+Write-Host "rilancia con -ProjectDir <cartella del progetto> per scrivere un opencode.json di progetto." -ForegroundColor Cyan
 Write-Host "Il modello predefinito è ds4/deepseek-v4.1-flash (cambialo con /models). La prima richiesta paga il prefill"
 Write-Host "del system prompt (~40 token/s, poi resta in cache sul server)."
