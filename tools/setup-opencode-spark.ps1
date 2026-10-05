@@ -39,9 +39,21 @@ $provider = [ordered]@{
     npm     = "@ai-sdk/openai-compatible"
     options = [ordered]@{ baseURL = $base; apiKey = "dsv4-local" }
     models  = [ordered]@{
-        "deepseek-v4.1-flash" = [ordered]@{
-            name  = "DeepSeek V4.1 Flash Q2 pruned (Spark)"
+        # alias riconosciuto dal server ds4: modalità SENZA ragionamento (risposte immediate)
+        "deepseek-chat" = [ordered]@{
+            name  = "V4.1 Flash Spark (veloce, senza ragionamento)"
             limit = [ordered]@{ context = $Context; output = $Output }
+        }
+        # stesso modello con ragionamento; livello scelto con le varianti (variant_cycle in OpenCode)
+        "deepseek-v4.1-flash" = [ordered]@{
+            name     = "V4.1 Flash Spark (con ragionamento)"
+            limit    = [ordered]@{ context = $Context; output = $Output }
+            options  = [ordered]@{ reasoningEffort = "low" }
+            variants = [ordered]@{
+                low    = [ordered]@{ reasoningEffort = "low" }
+                medium = [ordered]@{ reasoningEffort = "medium" }
+                high   = [ordered]@{ reasoningEffort = "high" }
+            }
         }
     }
 }
@@ -59,14 +71,14 @@ if (Test-Path $cfgPath) {
 if (-not $cfg.ContainsKey('$schema')) { $cfg['$schema'] = "https://opencode.ai/config.json" }
 if (-not $cfg.ContainsKey('provider') -or $null -eq $cfg['provider']) { $cfg['provider'] = @{} }
 $cfg['provider']['ds4'] = $provider
-$cfg['model'] = "ds4/deepseek-v4.1-flash"
+$cfg['model'] = "ds4/deepseek-chat"
 $cfg | ConvertTo-Json -Depth 10 | Set-Content -Path $cfgPath -Encoding UTF8
-Write-Host "   OK: provider 'ds4' scritto, modello predefinito ds4/deepseek-v4.1-flash" -ForegroundColor Green
+Write-Host "   OK: provider 'ds4' scritto, modello predefinito ds4/deepseek-chat (senza ragionamento)" -ForegroundColor Green
 
 if ($ProjectDir) {
     $projCfg = Join-Path $ProjectDir "opencode.json"
     if (Test-Path $projCfg) { Copy-Item $projCfg "$projCfg.bak-$(Get-Date -Format yyyyMMdd-HHmmss)" }
-    $pc = [ordered]@{ '$schema' = "https://opencode.ai/config.json"; provider = @{ ds4 = $provider }; model = "ds4/deepseek-v4.1-flash" }
+    $pc = [ordered]@{ '$schema' = "https://opencode.ai/config.json"; provider = @{ ds4 = $provider }; model = "ds4/deepseek-chat" }
     $pc | ConvertTo-Json -Depth 10 | Set-Content -Path $projCfg -Encoding UTF8
     Write-Host "   OK: scritto anche $projCfg (config di progetto)" -ForegroundColor Green
 }
@@ -83,7 +95,7 @@ if ($oc) {
 
 Write-Host ""
 Write-Host "4) Prova rapida dell'endpoint con una chat completion ..." -ForegroundColor Cyan
-$body = @{ model = "deepseek-v4.1-flash"; max_tokens = 24; temperature = 0; think = $false
+$body = @{ model = "deepseek-chat"; max_tokens = 24; temperature = 0
            messages = @(@{ role = "user"; content = "Rispondi con una sola parola: pronto?" }) } | ConvertTo-Json -Depth 5
 try {
     $sw = [Diagnostics.Stopwatch]::StartNew()
@@ -96,7 +108,8 @@ try {
 
 Write-Host ""
 Write-Host "Fatto. Riavvia OpenCode (anche la Desktop app: legge la configurazione all'avvio) e seleziona" -ForegroundColor Cyan
-Write-Host "il modello con /models -> 'DwarfStar V4.1 Flash (Spark)'. Se la Desktop app non mostra il provider," -ForegroundColor Cyan
+Write-Host "il modello con /models: 'veloce, senza ragionamento' per il lavoro normale, 'con ragionamento' quando serve." -ForegroundColor Cyan
+Write-Host "Se la Desktop app non mostra il provider," -ForegroundColor Cyan
 Write-Host "rilancia con -ProjectDir <cartella del progetto> per scrivere un opencode.json di progetto." -ForegroundColor Cyan
 Write-Host "Il modello predefinito è ds4/deepseek-v4.1-flash (cambialo con /models). La prima richiesta paga il prefill"
 Write-Host "del system prompt (~40 token/s, poi resta in cache sul server)."

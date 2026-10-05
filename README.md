@@ -123,7 +123,7 @@ absolute paths (`/home/utente/ds4-engine/...`) that you will want to adapt.
 | `build_tools_corpus.py`, `merge_hits.py` | OpenCode-style tool-bearing profile corpus; weighted merge of several profiles |
 | `test_endpoint.py` | endpoint check: long prefill, prefix cache, OpenAI tool call, SSE streaming |
 | `serve-v41.sh`, `chat-v41.sh` | LAN server launcher (ctx 32768, KV disk cache, fast path) and terminal chat |
-| `setup-opencode-spark.ps1`, `opencode-provider.json` | Windows client setup for OpenCode against the Spark endpoint |
+| `setup-opencode-spark.ps1`, `opencode-provider.json` | Windows client setup for OpenCode against the Spark endpoint. Exposes two models: `deepseek-chat` (ds4-server alias = no thinking, the sane default for an agent) and `deepseek-v4.1-flash` with reasoning variants; ds4-server otherwise defaults DeepSeek chat requests to high-effort thinking, which looks like a hang from the client |
 
 Minimal recipe:
 

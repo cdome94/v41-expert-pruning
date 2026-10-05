@@ -9,12 +9,22 @@
         "apiKey": "dsv4-local"
       },
       "models": {
-        "deepseek-v4.1-flash": {
-          "name": "DeepSeek V4.1 Flash Q2 pruned (Spark)",
+        "deepseek-chat": {
+          "name": "V4.1 Flash Spark (veloce, senza ragionamento)",
           "limit": { "context": 32768, "output": 8192 }
+        },
+        "deepseek-v4.1-flash": {
+          "name": "V4.1 Flash Spark (con ragionamento)",
+          "limit": { "context": 32768, "output": 8192 },
+          "options": { "reasoningEffort": "low" },
+          "variants": {
+            "low": { "reasoningEffort": "low" },
+            "medium": { "reasoningEffort": "medium" },
+            "high": { "reasoningEffort": "high" }
+          }
         }
       }
     }
   },
-  "model": "ds4/deepseek-v4.1-flash"
+  "model": "ds4/deepseek-chat"
 }
