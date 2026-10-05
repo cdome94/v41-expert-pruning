@@ -1,0 +1,27 @@
+layers=40 experts=384 router rows (tokens) per layer=47531  total expert calls=11407440
+
+coverage of top-N experts per layer (mean over layers | worst layer):
+  N= 48 (12.5%)  mean cov  50.76%  worst  38.22% (layer 0)  mean miss 49.24%  cache   17.8 GiB  weight-mass cov  53.13%
+  N= 64 (16.7%)  mean cov  57.71%  worst  44.88% (layer 0)  mean miss 42.29%  cache   23.7 GiB  weight-mass cov  60.11%
+  N= 96 (25.0%)  mean cov  68.63%  worst  56.43% (layer 0)  mean miss 31.37%  cache   35.6 GiB  weight-mass cov  71.04%
+  N=128 (33.3%)  mean cov  77.00%  worst  66.11% (layer 0)  mean miss 23.00%  cache   47.5 GiB  weight-mass cov  79.26%
+  N=160 (41.7%)  mean cov  83.52%  worst  74.07% (layer 0)  mean miss 16.48%  cache   59.3 GiB  weight-mass cov  85.44%
+  N=192 (50.0%)  mean cov  88.62%  worst  80.75% (layer 0)  mean miss 11.38%  cache   71.2 GiB  weight-mass cov  90.23%
+  N=224 (58.3%)  mean cov  92.57%  worst  86.45% (layer 0)  mean miss  7.43%  cache   83.0 GiB  weight-mass cov  93.83%
+  N=256 (66.7%)  mean cov  95.53%  worst  91.16% (layer 0)  mean miss  4.47%  cache   94.9 GiB  weight-mass cov  96.42%
+  N=320 (83.3%)  mean cov  99.06%  worst  97.79% (layer 0)  mean miss  0.94%  cache  118.6 GiB  weight-mass cov  99.30%
+
+mean router weight per selected expert: 0.2500 (6 experts sum to 1.5)
+
+experts needed per layer for a coverage target (mean | max over layers):
+   90.0%  mean  201.3  max  248  total 8051 experts = 74.6 GiB
+   95.0%  mean  248.2  max  289  total 9929 experts = 92.0 GiB
+   98.0%  mean  293.0  max  324  total 11719 experts = 108.6 GiB
+   99.0%  mean  317.3  max  341  total 12691 experts = 117.6 GiB
+   99.9%  mean  360.1  max  370  total 14406 experts = 133.5 GiB
+
+never-selected experts per layer: mean 2.3, min 0, max 11
+effective number of experts per layer (exp entropy): mean 189.1 min 154.2 max 251.8
+
+budget 8546 slots (79.2 GiB): per-layer keep min 176 max 274 mean 213.7; coverage mean 91.63% worst 90.32% (layer 7); uniform N=213 would give 91.33%
+  keep per layer: [274, 233, 204, 194, 208, 205, 183, 176, 206, 198, 214, 224, 225, 241, 223, 264, 196, 211, 216, 251, 210, 227, 203, 235, 200, 178, 197, 210, 195, 199, 215, 197, 203, 208, 204, 204, 215, 231, 235, 234]

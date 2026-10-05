@@ -1,0 +1,493 @@
+diff --git a/ds4.c b/ds4.c
+index 633a3cf..4ed99d5 100644
+--- a/ds4.c
++++ b/ds4.c
+@@ -1505,6 +1505,134 @@ static double now_sec(void) {
+     return (double)ts.tv_sec + (double)ts.tv_nsec * 1.0e-9;
+ }
+ 
++/* ---------------------------------------------------------------------------
++ * Routed-expert hit profile (any backend; used for V4.1 CUDA SSD streaming).
++ * Enabled by DS4_EXPERT_HITS_OUT=<csv path>.  Every time the host reads the
++ * router's selected expert ids for a layer (decode sync/async and batched
++ * prefill), the (layer, expert) counters are bumped.  The CSV is rewritten
++ * atomically at exit and every DS4_EXPERT_HITS_EVERY rows (default 2048) so
++ * a killed ds4-server still leaves a usable profile.
++ * ------------------------------------------------------------------------- */
++static uint64_t        g_expert_hits[DS4_MAX_LAYER][DS4_MAX_EXPERT];
++static uint64_t        g_expert_hits_rows[DS4_MAX_LAYER];
++static double          g_expert_weight[DS4_MAX_LAYER][DS4_MAX_EXPERT];
++static pthread_mutex_t g_expert_weight_mutex = PTHREAD_MUTEX_INITIALIZER;
++static int             g_expert_hits_state = 0; /* 0 unset, 1 on, -1 off */
++static const char     *g_expert_hits_path = NULL;
++static uint64_t        g_expert_hits_every = 2048;
++static uint64_t        g_expert_hits_pending = 0;
++static pthread_mutex_t g_expert_hits_mutex = PTHREAD_MUTEX_INITIALIZER;
++
++static void ds4_expert_hits_dump(void) {
++    if (g_expert_hits_state != 1 || !g_expert_hits_path) return;
++    pthread_mutex_lock(&g_expert_hits_mutex);
++    char tmp[4096];
++    snprintf(tmp, sizeof(tmp), "%s.tmp", g_expert_hits_path);
++    FILE *fp = fopen(tmp, "w");
++    if (fp) {
++        fprintf(fp, "layer,expert,hits,layer_rows,weight\n");
++        for (uint32_t il = 0; il < DS4_N_LAYER && il < DS4_MAX_LAYER; il++) {
++            const uint64_t rows =
++                __atomic_load_n(&g_expert_hits_rows[il], __ATOMIC_RELAXED);
++            for (uint32_t e = 0; e < DS4_N_EXPERT && e < DS4_MAX_EXPERT; e++) {
++                const uint64_t h =
++                    __atomic_load_n(&g_expert_hits[il][e], __ATOMIC_RELAXED);
++                pthread_mutex_lock(&g_expert_weight_mutex);
++                const double w = g_expert_weight[il][e];
++                pthread_mutex_unlock(&g_expert_weight_mutex);
++                fprintf(fp, "%u,%u,%" PRIu64 ",%" PRIu64 ",%.6f\n", il, e, h, rows, w);
++            }
++        }
++        if (fclose(fp) == 0) rename(tmp, g_expert_hits_path);
++    } else {
++        fprintf(stderr, "ds4: expert hits: cannot write %s: %s\n",
++                tmp, strerror(errno));
++    }
++    pthread_mutex_unlock(&g_expert_hits_mutex);
++}
++
++static bool ds4_expert_hits_enabled(void) {
++    if (g_expert_hits_state != 0) return g_expert_hits_state == 1;
++    pthread_mutex_lock(&g_expert_hits_mutex);
++    if (g_expert_hits_state == 0) {
++        const char *path = getenv("DS4_EXPERT_HITS_OUT");
++        if (path && path[0]) {
++            g_expert_hits_path = path;
++            const char *every = getenv("DS4_EXPERT_HITS_EVERY");
++            if (every && every[0]) {
++                g_expert_hits_every = strtoull(every, NULL, 10);
++            }
++            atexit(ds4_expert_hits_dump);
++            fprintf(stderr, "ds4: expert hits profile -> %s (dump every %"
++                    PRIu64 " rows)\n", path, g_expert_hits_every);
++            g_expert_hits_state = 1;
++        } else {
++            g_expert_hits_state = -1;
++        }
++    }
++    pthread_mutex_unlock(&g_expert_hits_mutex);
++    return g_expert_hits_state == 1;
++}
++
++static void ds4_expert_hits_record(uint32_t       il,
++                                   const int32_t *ids,
++                                   const float   *weights,
++                                   uint32_t       n_rows,
++                                   uint32_t       n_used) {
++    if (!ds4_expert_hits_enabled()) return;
++    if (!ids || il >= DS4_MAX_LAYER) return;
++    if (weights) pthread_mutex_lock(&g_expert_weight_mutex);
++    for (uint32_t r = 0; r < n_rows; r++) {
++        for (uint32_t i = 0; i < n_used; i++) {
++            const int32_t e = ids[(uint64_t)r * n_used + i];
++            if (e < 0 || e >= (int32_t)DS4_MAX_EXPERT) continue;
++            __atomic_fetch_add(&g_expert_hits[il][e], 1, __ATOMIC_RELAXED);
++            if (weights) g_expert_weight[il][e] += (double)weights[(uint64_t)r * n_used + i];
++        }
++    }
++    if (weights) pthread_mutex_unlock(&g_expert_weight_mutex);
++    __atomic_fetch_add(&g_expert_hits_rows[il], n_rows, __ATOMIC_RELAXED);
++    if (g_expert_hits_every) {
++        const uint64_t pend =
++            __atomic_add_fetch(&g_expert_hits_pending, n_rows, __ATOMIC_RELAXED);
++        if (pend >= g_expert_hits_every) {
++            __atomic_store_n(&g_expert_hits_pending, 0, __ATOMIC_RELAXED);
++            ds4_expert_hits_dump();
++        }
++    }
++}
++
++/* GPU-tensor capture for the routed-expert hit profile (CUDA/Metal decode and
++ * prefill). Only runs when DS4_EXPERT_HITS_OUT is set, so production inference
++ * is untouched. Reads the tiny selected-id tensor with the same end/begin
++ * command-buffer guard the cold-path selected loads use. */
++static void ds4_expert_hits_capture(uint32_t        il,
++                                    ds4_gpu_tensor *selected,
++                                    ds4_gpu_tensor *weights,
++                                    uint32_t        n_rows,
++                                    uint32_t        n_used) {
++    if (!selected || n_rows == 0 || n_used == 0) return;
++    if (!ds4_expert_hits_enabled()) return;
++    const uint64_t n = (uint64_t)n_rows * (uint64_t)n_used;
++    if (n == 0 || n > SIZE_MAX / sizeof(int32_t)) return;
++    int32_t *ids = malloc((size_t)n * sizeof(int32_t));
++    float *w = weights ? malloc((size_t)n * sizeof(float)) : NULL;
++    if (!ids) { free(w); return; }
++    bool ok = false;
++    if (ds4_gpu_end_commands() != 0) {
++        ok = ds4_gpu_tensor_read(selected, 0, ids,
++                                 n * sizeof(int32_t)) != 0;
++        if (ok && w && weights->bytes >= n * sizeof(float) &&
++            ds4_gpu_tensor_read(weights, 0, w, n * sizeof(float)) == 0) {
++            free(w); w = NULL;
++        }
++        if (ds4_gpu_begin_commands() == 0) ok = false;
++    }
++    if (ok) ds4_expert_hits_record(il, ids, w, n_rows, n_used);
++    free(ids);
++    free(w);
++}
++
+ /* =========================================================================
+  * Metal Routed Expert Locality Profiler.
+  * =========================================================================
+@@ -26221,6 +26349,8 @@ static bool metal_graph_encode_decode_layer_phase(
+                                                     layer->ffn_gate_tid2eid != NULL,
+                                                     metal_graph_router_logits(g)) != 0;
+         }
++        if (ok) ds4_expert_hits_capture(il, metal_graph_router_selected(g),
++                                        metal_graph_router_weights(g), 1, DS4_N_EXPERT_USED);
+         if (ok) ok = metal_graph_decode_set_hash_selected_override(model,
+                                                                    layer,
+                                                                    il,
+@@ -32787,6 +32917,8 @@ static bool metal_graph_encode_layer_ffn_batch(
+                     DS4_EXPERT_WEIGHT_SCALE,
+                     n_tokens) != 0;
+     }
++    if (ok) ds4_expert_hits_capture(il, metal_graph_batch_router_selected(g),
++                                    metal_graph_batch_router_weights(g), n_tokens, DS4_N_EXPERT_USED);
+     ds4_gpu_tensor_free(router_tokens);
+     if (ok) {
+         metal_graph_debug_dump_tensor("ffn_moe_logits", metal_graph_batch_router_logits(g),
+@@ -40735,11 +40867,15 @@ static bool ds41_moe_partial(ds41_gpu_graph *g, const ds4_model *m,
+     ds4_gpu_tensor *routed = shared_owner ? g->block : g->routed;
+     const ds4_tensor *bias = ds41_image_at(g, g->pos) ? l->ffn_exp_probs_vl : l->ffn_exp_probs_b;
+     if (!bias) return false;
++#if !defined(__APPLE__) && !defined(DS4_ROCM_BUILD) && !defined(DS4_NO_GPU)
++    if (g->streaming) ds4_gpu_stream_expert_cache_set_layer_bias(il, bias->abs_offset);
++#endif
+     if (!ds41_matmul(g->route_logits, m, l->ffn_gate_inp, g->norm, false) ||
+         !ds4_gpu_router_select_tensor(g->selected, g->route_weights, g->route_probs,
+             m->map, m->size, bias->abs_offset, 0, 0, token,
+             DS4_N_EXPERT, DS4_N_EXPERT_USED, DS4_EXPERT_WEIGHT_SCALE, 0, 0, true, false,
+             g->route_logits)) return false;
++    ds4_expert_hits_capture(il, g->selected, g->route_weights, 1, DS4_N_EXPERT_USED);
+     const bool shared_here = !shared_owner || g->tp_rank == (il & 1u);
+     bool shared_queued = false;
+ #if !defined(__APPLE__) && !defined(DS4_ROCM_BUILD)
+@@ -41172,8 +41308,8 @@ static bool ds41_graph_decode_layer(ds41_gpu_graph *g, const ds4_model *m,
+ }
+ #endif
+ 
+-static bool ds41_route_batch(ds41_gpu_graph *g, const ds4_model *m,
+-                              const ds4_layer_weights *l, uint32_t count) {
++static bool ds41_route_batch_select(ds41_gpu_graph *g, const ds4_model *m,
++                                     const ds4_layer_weights *l, uint32_t count) {
+     ds41_prefill_row *b = &g->batch;
+     if (!g->image_count) return ds4_gpu_router_select_batch_tensor(
+         b->selected, b->route_weights, b->route_probs, m->map, m->size,
+@@ -41207,6 +41343,15 @@ static bool ds41_route_batch(ds41_gpu_graph *g, const ds4_model *m,
+     return true;
+ }
+ 
++/* Router selection for a prefill/batched-decode block, plus the optional
++ * routed-expert hit profile (DS4_EXPERT_HITS_OUT). */
++static bool ds41_route_batch(ds41_gpu_graph *g, const ds4_model *m,
++                             const ds4_layer_weights *l, uint32_t il, uint32_t count) {
++    if (!ds41_route_batch_select(g, m, l, count)) return false;
++    ds4_expert_hits_capture(il, g->batch.selected, g->batch.route_weights, count, DS4_N_EXPERT_USED);
++    return true;
++}
++
+ static bool ds41_moe_batch(ds41_gpu_graph *g, const ds4_model *m,
+                            const ds4_layer_weights *l, uint32_t il, uint32_t count,
+                            bool shared_owner) {
+@@ -41215,7 +41360,7 @@ static bool ds41_moe_batch(ds41_gpu_graph *g, const ds4_model *m,
+     const uint64_t down_row = routed_expert_row_bytes(l->ffn_down_exps);
+     bool mid_f16 = false;
+     return ds41_matmul_batch(b->route_logits, m, l->ffn_gate_inp, b->norm, count, false) &&
+-        ds41_route_batch(g, m, l, count) &&
++        ds41_route_batch(g, m, l, il, count) &&
+         ((shared_owner && g->tp_rank != (il & 1u)) ||
+         (ds41_matmul_batch(b->shared_gate, m, l->ffn_gate_shexp, b->norm, count, true) &&
+         ds41_matmul_batch(b->shared_up, m, l->ffn_up_shexp, b->norm, count, true) &&
+@@ -41263,8 +41408,12 @@ static DS4_MAYBE_UNUSED bool ds41_graph_step(ds41_gpu_graph *g, const ds4_model
+      * layer mapped, using the same admitted reserve as layer-major prefill. */
+     const bool layer_resident = g->streaming && g->quality;
+     if (layer_resident && !ds4_gpu_end_commands()) ok = false;
+-    const bool queue_layers = g->tp_world == 2 && !g->imatrix &&
+-        !getenv("DS4_METAL_DISABLE_V41_TP_DECODE_QUEUE");
++    const bool queue_layers = (g->tp_world == 2 && !g->imatrix &&
++        !getenv("DS4_METAL_DISABLE_V41_TP_DECODE_QUEUE")) ||
++        /* Opt-in for single-GPU streaming with the resident fast path: no
++         * per-layer host dependency remains, so skip the per-layer drain. */
++        (g->tp_world == 1 && g->streaming && !g->imatrix &&
++         getenv("DS4_CUDA_V41_QUEUE_LAYERS") != NULL);
+     for (uint32_t il = 0; ok && il < DS4_N_LAYER; il++) {
+         const ds4_layer_weights *l = &w->layer[il];
+         if (layer_resident)
+diff --git a/ds4_cuda.cu b/ds4_cuda.cu
+index 3543459..42f2545 100644
+--- a/ds4_cuda.cu
++++ b/ds4_cuda.cu
+@@ -184,6 +184,12 @@ static std::vector<int32_t> g_stream_prefill_ids, g_stream_prefill_slots;
+ extern "C" void ds4_gpu_stream_expert_cache_prefetch_finish(bool cancel);
+ static void cuda_stream_prefetch_before_load(const ds4_gpu_stream_expert_table *table);
+ static bool cuda_stream_prefetch_protects(const cuda_stream_expert_slot &slot);
++/* Resident fast path (see cuda_stream_resident_fast_path below). */
++static int cuda_stream_resident_fast_path(const ds4_gpu_stream_expert_table *table,
++                                          const ds4_gpu_tensor *selected, uint32_t count);
++static void cuda_stream_slot_map_changed(void);
++static void cuda_stream_resident_release(void);
++static uint64_t g_stream_resident_slow_calls;
+ static int cuda_stream_compact_prefill(const char **gate, const char **up,
+                                       const char **down, const int32_t **ids,
+                                       uint32_t *experts, uint32_t in_dim = 0,
+@@ -218,6 +224,7 @@ static void cuda_stream_selected_cache_release(void) {
+     g_stream_selected_cache.logical_tier = -1;
+     g_stream_expert_slots.clear();
+     g_stream_expert_by_gate.clear();
++    cuda_stream_resident_release();
+     g_stream_expert_clock = 1;
+     g_stream_prefill_ids.clear();
+     g_stream_prefill_slots.clear();
+@@ -24442,9 +24449,13 @@ static int routed_moe_launch(
+         const ds4_gpu_stream_expert_table table = {
+             model_map, model_size, layer_index, n_total_expert,
+             gate_offset, up_offset, down_offset, gate_expert_bytes, down_expert_bytes};
+-        if ((uint64_t)n_tokens * n_expert > UINT32_MAX ||
+-            !ds4_gpu_glm_stream_expert_cache_begin_selected_load_tensor(
+-                &table, selected, n_tokens * n_expert)) return 0;
++        if ((uint64_t)n_tokens * n_expert > UINT32_MAX) return 0;
++        if (!(n_tokens == 1u &&
++              cuda_stream_resident_fast_path(&table, selected, n_expert))) {
++            if (n_tokens == 1u) g_stream_resident_slow_calls++;
++            if (!ds4_gpu_glm_stream_expert_cache_begin_selected_load_tensor(
++                    &table, selected, n_tokens * n_expert)) return 0;
++        }
+         allow_streaming = 1;
+     }
+ 
+@@ -27132,6 +27143,7 @@ struct cuda_stream_upload_batch {
+         ds4_gpu_stream_expert_cache_prefetch_finish(true);
+         g_stream_expert_by_gate.clear();
+         for (auto &slot : g_stream_expert_slots) slot.used = 0;
++        cuda_stream_slot_map_changed();
+         return 0;
+     }
+     ~cuda_stream_upload_batch() { (void)finish(); }
+@@ -27299,6 +27311,7 @@ static int cuda_stream_selected_cache_begin_load(
+         cache.slot_selected_tensor.owner = 0;
+         cache.slot_selected_tensor.device_id = 0;
+         cache.valid = 1;
++        cuda_stream_slot_map_changed();
+         return 1;
+     } catch (...) {
+         cuda_stream_selected_cache_release();
+@@ -27346,6 +27359,179 @@ static bool cuda_stream_prefetch_protects(const cuda_stream_expert_slot &slot) {
+     return g_stream_prefetch.active && cuda_stream_slot_in_table(slot, g_stream_prefetch.table);
+ }
+ 
++/* ---------------------------------------------------------------------------
++ * Resident fast path for SSD streaming.
++ *
++ * When every expert the router can still select in a layer (bias > -1000;
++ * pruned experts carry a -1e4 router bias) already owns a cache slot, the
++ * per-layer host round trip of the streaming path is pure overhead: the
++ * device-to-host read of the selected ids, the decode-stream drain, the hash
++ * lookups and the host-to-device remap copy.  Instead keep a per-layer
++ * expert->slot table on the device and resolve the selected ids with a tiny
++ * kernel on the decode stream.  Nothing in the slot map changes, so no sync
++ * is needed.  Any change of slot ownership bumps g_stream_slot_map_version
++ * and the layer rows are rebuilt lazily.  Disable with
++ * DS4_CUDA_DISABLE_RESIDENT_FAST_PATH=1.
++ * ------------------------------------------------------------------------- */
++static uint64_t g_stream_slot_map_version = 1;
++struct cuda_stream_layer_resident {
++    uint64_t bias_offset = 0;
++    uint64_t version = 0;
++    bool resident = false;
++    int32_t *row_dev = nullptr;
++    uint32_t row_count = 0;
++    std::vector<uint32_t> live_slots;
++};
++static std::unordered_map<uint32_t, cuda_stream_layer_resident> g_stream_layer_resident;
++static uint64_t g_stream_resident_fast_hits = 0;
++
++static void cuda_stream_resident_report(void) {
++    if (g_stream_resident_fast_hits || g_stream_resident_slow_calls)
++        fprintf(stderr, "ds4: CUDA streaming resident fast path: %llu fast layer loads, %llu slow (host) layer loads\n",
++                (unsigned long long)g_stream_resident_fast_hits,
++                (unsigned long long)g_stream_resident_slow_calls);
++}
++static void cuda_stream_slot_map_changed(void) { g_stream_slot_map_version++; }
++
++static void cuda_stream_resident_release(void) {
++    for (auto &kv : g_stream_layer_resident) {
++        if (kv.second.row_dev) (void)cudaFree(kv.second.row_dev);
++        kv.second.row_dev = nullptr;
++        kv.second.row_count = 0;
++        kv.second.resident = false;
++        kv.second.version = 0;
++        kv.second.live_slots.clear();
++    }
++    g_stream_slot_map_version++;
++}
++
++extern "C" void ds4_gpu_stream_expert_cache_set_layer_bias(uint32_t layer, uint64_t bias_offset) {
++    auto &lr = g_stream_layer_resident[layer];
++    if (lr.bias_offset != bias_offset) {
++        lr.bias_offset = bias_offset;
++        lr.version = 0;
++        lr.resident = false;
++    }
++}
++
++__global__ static void stream_resident_resolve_kernel(int32_t *slot_selected,
++                                                      const int32_t *selected,
++                                                      const int32_t *row,
++                                                      uint32_t n_total_expert,
++                                                      uint32_t count) {
++    const uint32_t i = blockIdx.x * blockDim.x + threadIdx.x;
++    if (i >= count) return;
++    const int32_t e = selected[i];
++    int32_t slot = (e >= 0 && (uint32_t)e < n_total_expert) ? row[e] : -1;
++    /* Cannot happen when the layer is fully resident; keep the index valid. */
++    slot_selected[i] = slot < 0 ? 0 : slot;
++}
++
++static int cuda_stream_resident_fast_path(const ds4_gpu_stream_expert_table *table,
++                                          const ds4_gpu_tensor *selected, uint32_t count) {
++    static int disabled = -1;
++    if (disabled < 0) disabled = getenv("DS4_CUDA_DISABLE_RESIDENT_FAST_PATH") != NULL;
++    if (disabled || !g_ssd_streaming_mode || !table || !selected || !count) return 0;
++    if (g_stream_prefetch.active) return 0;
++    auto &cache = g_stream_selected_cache;
++    if (!cache.gate_ptr || !cache.up_ptr || !cache.down_ptr ||
++        cache.model_map != table->model_map ||
++        cache.gate_expert_bytes != table->gate_expert_bytes ||
++        cache.down_expert_bytes != table->down_expert_bytes ||
++        g_stream_expert_slots.empty() || g_n_gpus != 1) return 0;
++    if (selected->bytes < (uint64_t)count * sizeof(int32_t)) return 0;
++    auto it = g_stream_layer_resident.find(table->layer);
++    if (it == g_stream_layer_resident.end() || !it->second.bias_offset) return 0;
++    auto &lr = it->second;
++    const uint32_t n = table->n_total_expert;
++    if (lr.version != g_stream_slot_map_version || lr.row_count != n) {
++        lr.resident = false;
++        lr.live_slots.clear();
++        if (n == 0 || lr.bias_offset > table->model_size ||
++            (uint64_t)n * sizeof(float) > table->model_size - lr.bias_offset) return 0;
++        const float *bias = (const float *)((const char *)table->model_map + lr.bias_offset);
++        std::vector<int32_t> row, missing;
++        try { row.assign(n, -1); lr.live_slots.reserve(n); } catch (...) { return 0; }
++        uint32_t live = 0;
++        /* Up to two passes: the first may stage the few live experts the
++         * router has not selected yet (they would otherwise never be cached
++         * and the layer would never become resident). */
++        for (int attempt = 0; attempt < 2; attempt++) {
++            lr.version = g_stream_slot_map_version;
++            live = 0; missing.clear(); lr.live_slots.clear();
++            std::fill(row.begin(), row.end(), -1);
++            for (uint32_t e = 0; e < n; e++) {
++                if (!(bias[e] > -1000.0f)) continue;
++                live++;
++                const uint64_t gate = table->gate_offset + (uint64_t)e * table->gate_expert_bytes;
++                const auto found = g_stream_expert_by_gate.find(gate);
++                if (found == g_stream_expert_by_gate.end()) { missing.push_back((int32_t)e); continue; }
++                const auto &slot = g_stream_expert_slots[found->second];
++                if (slot.up != table->up_offset + (uint64_t)e * table->gate_expert_bytes ||
++                    slot.down != table->down_offset + (uint64_t)e * table->down_expert_bytes) {
++                    missing.push_back((int32_t)e); continue;
++                }
++                row[e] = (int32_t)found->second;
++                lr.live_slots.push_back(found->second);
++            }
++            if (missing.empty()) break;
++            /* Only finish an almost-resident layer; leave real warm-up to the
++             * demand path.  Needs spare slots: size the cache above the live
++             * expert total (see --ssd-streaming-cache-experts). */
++            if (attempt == 1 || missing.size() > 64 || live == 0 ||
++                g_stream_expert_slots.size() < lr.live_slots.size() + missing.size()) return 0;
++            fprintf(stderr, "ds4: CUDA streaming resident fast path: staging %zu missing live experts for layer %u\n",
++                    missing.size(), table->layer);
++            if (!cuda_stream_selected_cache_begin_load(table, missing.data(), (uint32_t)missing.size()))
++                return 0;
++        }
++        if (live == 0 || !missing.empty()) return 0;
++        if (!lr.row_dev || lr.row_count != n) {
++            if (lr.row_dev) (void)cudaFree(lr.row_dev);
++            lr.row_dev = nullptr;
++            if (!cuda_ok(cudaMalloc(&lr.row_dev, (size_t)n * sizeof(int32_t)), "resident slot row"))
++                return 0;
++            lr.row_count = n;
++        }
++        if (!cuda_ok(cudaMemcpy(lr.row_dev, row.data(), (size_t)n * sizeof(int32_t),
++                                cudaMemcpyHostToDevice), "resident slot row copy")) return 0;
++        lr.resident = true;
++        static int logged = 0;
++        if (!logged) {
++            logged = 1;
++            atexit(cuda_stream_resident_report);
++            fprintf(stderr, "ds4: CUDA streaming resident fast path active (layer %u: %u live experts, all cached)\n",
++                    table->layer, live);
++        }
++    }
++    if (!lr.resident) return 0;
++    /* Keep the resident set hot so misses in other layers never evict it. */
++    if (g_stream_expert_clock < UINT64_MAX - 1) {
++        const uint64_t stamp = ++g_stream_expert_clock;
++        for (uint32_t slot : lr.live_slots) g_stream_expert_slots[slot].used = stamp;
++    }
++    if (!cuda_stream_selected_ensure_i32(count)) return 0;
++    stream_resident_resolve_kernel<<<(count + 255u) / 256u, 256, 0, cuda_decode_stream()>>>(
++            cache.slot_selected_ptr, (const int32_t *)selected->ptr, lr.row_dev, n, count);
++    if (!cuda_ok(cudaGetLastError(), "resident slot resolve launch")) return 0;
++    cache.layer = table->layer;
++    cache.n_total_expert = n;
++    cache.slot_count = count;
++    cache.compact_count = (uint32_t)g_stream_expert_slots.size();
++    cache.gate_offset = table->gate_offset;
++    cache.up_offset = table->up_offset;
++    cache.down_offset = table->down_offset;
++    cache.slot_selected_tensor.ptr = cache.slot_selected_ptr;
++    cache.slot_selected_tensor.bytes = (uint64_t)count * sizeof(int32_t);
++    cache.slot_selected_tensor.owner = 0;
++    cache.slot_selected_tensor.device_id = 0;
++    cache.valid = 1;
++    g_stream_prefill_ids.clear();
++    g_stream_prefill_slots.clear();
++    g_stream_resident_fast_hits++;
++    return 1;
++}
++
+ static void cuda_stream_prefetch_before_load(const ds4_gpu_stream_expert_table *table) {
+     auto &p = g_stream_prefetch;
+     if (!p.active) return;
+@@ -27410,6 +27596,7 @@ extern "C" void ds4_gpu_stream_expert_cache_prefetch_finish(bool cancel) {
+         if (publish) {
+             try {
+                 g_stream_expert_by_gate[reserved.value.gate] = reserved.index;
++                cuda_stream_slot_map_changed();
+                 slot = reserved.value;
+                 /* Look-ahead is not evidence of reuse. Only an actual router
+                  * hit promotes these slots, so unused reads cannot displace
+@@ -27524,6 +27711,7 @@ extern "C" int ds4_gpu_stream_expert_cache_prefetch(
+             auto &slot = g_stream_expert_slots[index];
+             if (slot.used) g_stream_expert_by_gate.erase(slot.gate);
+             slot = value;
++            cuda_stream_slot_map_changed();
+         }
+         /* Read in file order and merge adjacent misses when their cache slots
+          * are contiguous. The private two-buffer ring overlaps reads/copies. */
+diff --git a/ds4_gpu.h b/ds4_gpu.h
+index 599f02b..7b0bb4f 100644
+--- a/ds4_gpu.h
++++ b/ds4_gpu.h
+@@ -282,6 +282,10 @@ typedef struct ds4_gpu_stream_expert_table {
+     uint64_t    down_expert_bytes;
+ } ds4_gpu_stream_expert_table;
+ #if !defined(__APPLE__) && !defined(DS4_ROCM_BUILD) && !defined(DS4_NO_GPU)
++/* Resident fast path: tell the CUDA streaming cache where this layer's router
++ * bias lives so it can recognise a fully cached live-expert set (pruned
++ * experts carry a -1e4 bias) and resolve selected ids on the device. */
++void ds4_gpu_stream_expert_cache_set_layer_bias(uint32_t layer, uint64_t bias_offset);
+ /* Optional CUDA look-ahead between completed layers, inside the existing
+  * expert cache. The foreground owns slots; the reader cannot publish them
+  * or evict the current layer's inputs. */

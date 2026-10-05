@@ -1,0 +1,9 @@
+requests parsed: 20  with prefill: 20  with decode: 20
+prefill t/s: median 9.94  mean 9.96  min 9.69  max 10.42   (prompt tokens median 64)
+decode  t/s: median 9.45  mean 9.48  min 9.31  max 9.84   (gen tokens median 128)
+decode first half median 9.44  second half median 9.47 (warm-up trend)
+   {'t': '1002 16:18:14', 'prompt': 65, 'prefill_s': 6.592, 'gen': 128, 'dec_avg': 9.31, 'dec_s': 13.754}
+   {'t': '1002 16:18:34', 'prompt': 59, 'prefill_s': 5.694, 'gen': 128, 'dec_avg': 9.84, 'dec_s': 13.013}
+   {'t': '1002 16:18:53', 'prompt': 65, 'prefill_s': 6.468, 'gen': 128, 'dec_avg': 9.51, 'dec_s': 13.462}
+   {'t': '1002 16:19:13', 'prompt': 72, 'prefill_s': 7.137, 'gen': 128, 'dec_avg': 9.43, 'dec_s': 13.573}
+   {'t': '1002 16:19:33', 'prompt': 63, 'prefill_s': 6.306, 'gen': 128, 'dec_avg': 9.42, 'dec_s': 13.591}

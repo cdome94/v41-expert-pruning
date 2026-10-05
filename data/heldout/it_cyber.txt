@@ -1,0 +1,23 @@
+Relazione tecnica di incident response - caso 2026-0147
+
+1. Sintesi
+
+Il 14 settembre alle 02:37 il SIEM ha generato un allarme di severità alta per un numero anomalo di autenticazioni fallite sul controller di dominio DC01, seguite da un'autenticazione riuscita con l'account di servizio svc_backup. Nelle due ore successive l'account è stato usato per accedere in SMB a tre file server e per creare un'attività pianificata su FS02. L'analisi ha confermato una compromissione iniziale tramite credenziali rubate con phishing, movimento laterale con pass-the-hash e un tentativo di esfiltrazione verso un dominio registrato quattro giorni prima. L'esfiltrazione è stata bloccata dal proxy perché la categoria del dominio non era classificata.
+
+2. Cronologia degli eventi
+
+Alle 23:50 del 13 settembre un dipendente dell'ufficio amministrazione ha aperto un allegato PDF ricevuto da un indirizzo che imitava il fornitore della contabilità. Il documento conteneva un collegamento a una pagina di login clonata del portale aziendale. Le credenziali inserite sono state raccolte dall'attaccante e usate alle 01:12 per accedere alla VPN, perché l'utente non aveva ancora attivato il secondo fattore. Dalla VPN l'attaccante ha eseguito una scansione delle condivisioni di rete e ha trovato uno script di backup con la password dell'account svc_backup in chiaro. Da quel momento ha operato con privilegi elevati.
+
+Gli eventi di Windows rilevanti sono stati il 4625 ripetuto, seguito dal 4624 con tipo di accesso 3, il 4672 per i privilegi speciali assegnati all'account di servizio e il 4698 per la creazione dell'attività pianificata. Sui file server è stato osservato il 5140 per l'accesso alle condivisioni amministrative. Il traffico di rete verso l'esterno mostrava connessioni TLS sulla porta 443 con intervalli regolari di sessanta secondi, un pattern tipico di beacon.
+
+3. Contenimento e bonifica
+
+Il SOC ha isolato le macchine coinvolte tramite l'EDR, ha reimpostato la password dell'account di servizio e ha revocato tutte le sessioni VPN attive. L'attività pianificata è stata rimossa e il binario associato, un loader che scaricava un secondo stadio, è stato inviato in sandbox. L'hash SHA-256 del campione è stato aggiunto alle liste di blocco e condiviso con il CERT di settore in formato STIX. Le regole di rilevamento sono state aggiornate con una regola Sigma per la creazione di attività pianificate da account di servizio e con una regola per i beacon a intervallo costante.
+
+4. Cause radice e raccomandazioni
+
+La causa radice è la combinazione di tre debolezze: l'autenticazione a più fattori non obbligatoria sulla VPN, una password di servizio in chiaro su una condivisione leggibile da tutti e l'assenza di segmentazione tra la rete degli utenti e quella dei server. Si raccomanda di imporre il secondo fattore resistente al phishing basato su FIDO2 per tutti gli accessi remoti, di spostare le credenziali dei servizi in un vault con rotazione automatica, di applicare il principio del minimo privilegio agli account di servizio e di introdurre una segmentazione con firewall interno tra le zone. Va inoltre completata la classificazione dei domini di nuova registrazione nel proxy, perché in questo caso il blocco è avvenuto per fortuna e non per una regola esplicita.
+
+5. Impatto e obblighi normativi
+
+Non è stata accertata l'esfiltrazione di dati personali, ma l'accesso alle condivisioni che contengono buste paga impone una valutazione formale. Il titolare del trattamento ha deciso di notificare l'evento al Garante entro le settantadue ore previste dal regolamento, documentando le misure adottate. Essendo l'azienda un soggetto importante ai sensi della direttiva NIS2, è stata inviata anche la notifica preliminare all'autorità nazionale competente entro ventiquattro ore dalla scoperta.
